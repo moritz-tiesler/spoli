@@ -12,6 +12,8 @@ import (
 
 const REDIRECT_URL string = "http://127.0.0.1:8080/callback"
 
+// TODO: use PKCE
+// users will not have to store their client secret
 var (
 	auth = spotifyauth.New(
 		spotifyauth.WithRedirectURL(REDIRECT_URL),
@@ -23,6 +25,11 @@ var (
 	ch    = make(chan *spotify.Client)
 	state = "abc123"
 )
+
+// TODO: on app startup
+// load stored access token, compare expiry date
+// if expired send old token to spotify to get new token
+// store new token
 
 func main() {
 	http.HandleFunc("/callback", completeAuth)
@@ -54,7 +61,7 @@ func main() {
 	var trackPage *spotify.SavedTrackPage
 	var offset int
 	var returned int = -1
-	// var tracks []spotify.SavedTrack
+	// can save one request by checking returned < limit
 	for returned == -1 || returned > 0 {
 		trackPage, err = client.CurrentUsersTracks(context.Background(), spotify.Limit(50), spotify.Offset(offset))
 		tracks := trackPage.Tracks
