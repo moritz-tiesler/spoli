@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,13 +20,31 @@ import (
 
 const REDIRECT_URL string = "http://127.0.0.1:8080/callback"
 
+var html = `
+<br/>
+<a href="/player/play">Play</a><br/>
+<a href="/player/pause">Pause</a><br/>
+<a href="/player/next">Next track</a><br/>
+<a href="/player/previous">Previous Track</a><br/>
+<a href="/player/shuffle">Shuffle</a><br/>
+
+`
+
 // TODO: use PKCE
 // users will not have to store their client secret
 var (
 	auth = spotifyauth.New(
 		spotifyauth.WithRedirectURL(REDIRECT_URL),
-		spotifyauth.WithScopes(spotifyauth.ScopeUserReadPrivate),
-		spotifyauth.WithScopes(spotifyauth.ScopeUserLibraryRead),
+		// spotifyauth.WithScopes(spotifyauth.ScopeUserReadPrivate),
+		// spotifyauth.WithScopes(spotifyauth.ScopeUserLibraryRead),
+		spotifyauth.WithScopes(
+			spotifyauth.ScopeUserReadCurrentlyPlaying,
+			spotifyauth.ScopeUserReadPlaybackState,
+			spotifyauth.ScopeUserModifyPlaybackState,
+			spotifyauth.ScopeUserReadPrivate,
+			spotifyauth.ScopeUserReadEmail,
+			spotifyauth.ScopeStreaming,
+		),
 		// spotifyauth.WithScopes(spotifyauth.ScopePlaylistModifyPublic),
 		// spotifyauth.WithScopes(spotifyauth.ScopePlaylistModifyPrivate),
 	)
@@ -43,54 +62,98 @@ var (
 // store new token
 
 func main() {
+
+	var client *spotify.Client
+	var playerState *spotify.PlayerState
+
 	http.HandleFunc("/callback", completeAuth)
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		log.Println("Got request for:", r.URL.String())
 	})
 
+	http.HandleFunc("/player/", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		action := strings.TrimPrefix(r.URL.Path, "/player/")
+		fmt.Println("Got request for:", action)
+		var err error
+		switch action {
+		case "play":
+			err = client.Play(ctx)
+		case "pause":
+			err = client.Pause(ctx)
+		case "next":
+			err = client.Next(ctx)
+		case "previous":
+			err = client.Previous(ctx)
+		case "shuffle":
+			playerState.ShuffleState = !playerState.ShuffleState
+			err = client.Shuffle(ctx, playerState.ShuffleState)
+		}
+		if err != nil {
+			log.Print(err)
+		}
+
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, html)
+	})
+
 	go func() {
-		err := http.ListenAndServe(":8080", nil)
+
+		url := auth.AuthURL(state)
+		fmt.Println("Please log in to Spotify by visiting the following page in your browser:", url)
+
+		// wait for auth to complete
+		c := <-ch
+		client = c.c
+
+		// use the client to make calls that require authorization
+		user, err := client.CurrentUser(context.Background())
 		if err != nil {
 			log.Fatal(err)
 		}
+
+		fmt.Println("You are logged in as:", user.ID)
+
+		playerState, err = client.PlayerState(context.Background())
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("Found your %s (%s)\n", playerState.Device.Type, playerState.Device.Name)
+		fmt.Printf("Found your %s\n", c.t.RefreshToken)
+		rt, _ := auth.RefreshToken(context.Background(), c.t)
+		fmt.Printf("Found your refresh %s\n", rt.AccessToken)
+
+		var trackPage *spotify.SavedTrackPage
+		var offset int
+		var returned int = -1
+		// can save one request by checking returned < limit
+		for returned == -1 || returned > 0 {
+			trackPage, err = client.CurrentUsersTracks(context.Background(), spotify.Limit(50), spotify.Offset(offset))
+			if trackPage == nil {
+				break
+			}
+			tracks := trackPage.Tracks
+			if err != nil {
+				log.Fatalf("could not get saved tracks: %v", err)
+			}
+			for _, t := range tracks {
+				fmt.Println(t.Name)
+			}
+			returned = len(tracks)
+			offset += returned
+		}
+		fmt.Println(offset)
+
+		// done := make(chan struct{})
+		// runChrome(client, c.t, done)
+		// <-done
 	}()
 
-	url := auth.AuthURL(state)
-	fmt.Println("Please log in to Spotify by visiting the following page in your browser:", url)
-
-	// wait for auth to complete
-	client := <-ch
-
-	// use the client to make calls that require authorization
-	user, err := client.c.CurrentUser(context.Background())
+	err := http.ListenAndServe(":8080", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	fmt.Println("You are logged in as:", user.ID)
-
-	var trackPage *spotify.SavedTrackPage
-	var offset int
-	var returned int = -1
-	// can save one request by checking returned < limit
-	for returned == -1 || returned > 0 {
-		trackPage, err = client.c.CurrentUsersTracks(context.Background(), spotify.Limit(50), spotify.Offset(offset))
-		tracks := trackPage.Tracks
-		if err != nil {
-			log.Fatalf("could not get saved tracks: %v", err)
-		}
-		for _, t := range tracks {
-			fmt.Println(t.Name)
-		}
-		returned = len(tracks)
-		offset += returned
-	}
-	fmt.Println(offset)
-
-	done := make(chan struct{})
-	runChrome(client.c, client.t, done)
-	<-done
-
 }
 
 func completeAuth(w http.ResponseWriter, r *http.Request) {
@@ -172,54 +235,16 @@ func runChrome(spotifyClient *spotify.Client, tok *oauth2.Token, done chan struc
 			if ev.Type == runtime.APITypeError {
 				log.Fatal(ev)
 			}
+			if ev.Type == runtime.APITypeLog {
+				log.Fatal(ev)
+			}
 
 		}
 	})
 
-	// JavaScript to inject and run in the browser
-	// TODO: this is trash, follow this
-	// https://developer.spotify.com/documentation/web-playback-sdk/tutorials/getting-started
-	spotifySDKInitJS := fmt.Sprintf(`
-		// No console.log here to avoid generating unnecessary console events
-		 window.onSpotifyWebPlaybackSDKReady = () => {
-		 	const player = new Spotify.Player({
-		 		name: 'Chromedp Headless Player',
-		 		getOAuthToken: cb => { cb('%s'); }, // Inject the access token here
-		 		volume: 0.5
-		 	});
-
-		 	player.addListener('ready', ({ device_id }) => {
-		 		window.sendDeviceID(device_id); // Call the exposed Go binding
-		 	});
-
-		 	// Still keep other listeners for error handling, but can remove their console.log if desired
-		 	player.addListener('not_ready', ({ device_id }) => {});
-		 	player.addListener('player_state_changed', (state) => {});
-		 	player.addListener('initialization_error', ({ message }) => { console.error('Initialization Error:', message); }); // Keeping error logs
-		 	player.addListener('authentication_error', ({ message }) => { console.error('Authentication Error:', message); }); // Keeping error logs
-		 	player.addListener('account_error', ({ message }) => { console.error('Account Error:', message); }); // Keeping error logs
-		 	player.addListener('playback_error', ({ message }) => { console.error('Playback Error:', message); }); // Keeping error logs
-
-		 	player.connect().then(success => {
-		 		if (!success) {
-		 			console.error('Failed to connect to Spotify Web Playback SDK.');
-		 		}
-		 	}).catch(err => {
-		 		console.error('Error connecting to SDK:', err);
-		 	});
-		 };
-	`, tok.AccessToken)
-
-	// spotifySDKInitJS := fmt.Sprintf(`window.onSpotifyWebPlaybackSDKReady = () => {
-	// 	const token = '%s';
-	// 	const player = new Spotify.Player({
-	// 		name: 'Web Playback SDK Quick Start Player',
-	// 		getOAuthToken: cb => { cb(token); },
-	// 		volume: 0.5
-	// 	});
-	// };`, tok.AccessToken)
-
 	var receivedDeviceID string
+
+	spotifySDKInitJS := fmt.Sprintf(SDK_INIT_JS, tok.AccessToken)
 	err := chromedp.Run(taskCtx,
 		chromedp.Navigate("about:blank"),
 
@@ -250,7 +275,7 @@ func runChrome(spotifyClient *spotify.Client, tok *oauth2.Token, done chan struc
 				receivedDeviceID = id
 				log.Printf("Successfully captured device ID: %s", receivedDeviceID)
 				return nil
-			case <-time.After(10 * time.Second):
+			case <-time.After(20 * time.Second):
 				return fmt.Errorf("timed out waiting for Spotify player device ID")
 			}
 		}),
