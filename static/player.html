@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Spotify Web Playback SDK Quick Start</title>
+</head>
+
+<body>
+    <h1>Spotify Web Playback SDK Quick Start</h1>
+    <button id="togglePlay">Toggle Play</button>
+
+    <script src="https://sdk.scdn.co/spotify-player.js"></script>
+
+    <script>
+        function fetchToken() {
+            return new Promise((resolve, reject) => {
+                fetch('http://localhost:8080/tok', {
+                    method: "GET",
+                    // body: JSON.stringify({
+                    //     userId: 1,
+                    //     title: "Fix my bugs",
+                    //     completed: false
+                    // })
+                }).then(res => {
+                    if (!res.ok) {
+                        throw new Error(`HTTP error! status: ${res.status}`);
+                    }
+                    return res.text();
+                }).then(tok => {
+                    if (tok) {
+                        resolve(tok)
+                    } else {
+                        reject(new Error("Token not found in response"))
+                    }
+                })
+            });
+        }
+
+        let token = null;
+        fetchToken()
+            .then(tok => {
+                token = tok;
+                console.log("got token: ", token)
+            }).catch(error => {
+                console.error("Failed to get token: ", error)
+            })
+
+        let interval = undefined
+        function cb() {
+            if (token == null) {
+                if (interval == undefined) {
+                    interval = setTimeout(cb, 1000);
+                }
+                clearInterval(interval)
+                return;
+            }
+            const player = new Spotify.Player({
+                name: 'Web Playback SDK Quick Start Player',
+                getOAuthToken: cb => { cb(token); },
+                volume: 0.5
+            });
+            // Ready
+            player.addListener('ready', ({ device_id }) => {
+                fetch(`/id/${device_id}`,{
+                    method: "POST"
+                } )
+                console.log('Ready with Device ID', device_id);
+            });
+
+            // Not Ready
+            player.addListener('not_ready', ({ device_id }) => {
+                console.log('Device ID has gone offline', device_id);
+            });
+            player.addListener('initialization_error', ({ message }) => {
+                console.error(message);
+            });
+
+            player.addListener('authentication_error', ({ message }) => {
+                console.error(message);
+            });
+
+            player.addListener('account_error', ({ message }) => {
+                console.error(message);
+            });
+
+            player.connect();
+
+            document.getElementById('togglePlay').onclick = function () {
+                player.togglePlay();
+            };
+        }
+
+        window.onSpotifyWebPlaybackSDKReady = () => cb();
+
+    </script>
+</body>
+
+</html>

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -53,7 +55,10 @@ var (
 		t *oauth2.Token
 	},
 	)
-	state = "abc123"
+
+	idChan = make(chan string, 1)
+	tChan  = make(chan string, 1)
+	state  = "abc123"
 )
 
 // TODO: on app startup
@@ -65,12 +70,36 @@ func main() {
 
 	var client *spotify.Client
 	var playerState *spotify.PlayerState
+	var tok string
 
 	http.HandleFunc("/callback", completeAuth)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		log.Println("Got request for:", r.URL.String())
 	})
+
+	http.HandleFunc("POST /id/{id}", func(w http.ResponseWriter, r *http.Request) {
+		log.Println("Got request for:", r.URL.String())
+		idString := r.PathValue("id")
+		idChan <- idString
+	})
+
+	http.HandleFunc("GET /tok", func(w http.ResponseWriter, r *http.Request) {
+		log.Println("Got request for:", r.URL.String())
+		if tok == "" {
+			tok = <-tChan
+		}
+		log.Println("Sending tok: ", tok)
+		w.Header().Add("Access-Control-Allow-Origin", "http://127.0.0.1:8080")
+		w.Write([]byte(tok))
+	})
+
+	pwd, _ := os.Getwd()
+	fDir := path.Join(pwd, "/static")
+	fmt.Println(fDir)
+
+	fs := http.FileServer(http.Dir(fDir))
+	http.Handle("/static/", http.StripPrefix("/static", fs))
 
 	http.HandleFunc("/player/", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -107,6 +136,11 @@ func main() {
 		c := <-ch
 		client = c.c
 
+		fmt.Printf("Found your %s\n", c.t.RefreshToken)
+		rt, _ := auth.RefreshToken(context.Background(), c.t)
+		fmt.Printf("Found your refresh %s\n", rt.AccessToken)
+
+		tChan <- rt.AccessToken
 		// use the client to make calls that require authorization
 		user, err := client.CurrentUser(context.Background())
 		if err != nil {
@@ -119,10 +153,15 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+
+		devId := <-idChan
+
+		err = client.TransferPlayback(context.Background(), spotify.ID(devId), true)
+		if err != nil {
+			log.Fatal(err)
+		}
+
 		fmt.Printf("Found your %s (%s)\n", playerState.Device.Type, playerState.Device.Name)
-		fmt.Printf("Found your %s\n", c.t.RefreshToken)
-		rt, _ := auth.RefreshToken(context.Background(), c.t)
-		fmt.Printf("Found your refresh %s\n", rt.AccessToken)
 
 		var trackPage *spotify.SavedTrackPage
 		var offset int
