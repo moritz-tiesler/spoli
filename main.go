@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -72,27 +73,41 @@ func main() {
 	var playerState *spotify.PlayerState
 	var tok string
 
-	http.HandleFunc("/callback", completeAuth)
+	loggingMiddleWare := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			log.Println("Got request for:", r.URL.String())
+			next.ServeHTTP(w, r)
+		})
+	}
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		log.Println("Got request for:", r.URL.String())
-	})
+	var stack Chain = []middleware{
+		middleware(loggingMiddleWare),
+	}
 
-	http.HandleFunc("POST /id/{id}", func(w http.ResponseWriter, r *http.Request) {
-		log.Println("Got request for:", r.URL.String())
+	http.Handle("/callback", stack.ThenFunc(completeAuth))
+
+	http.Handle("/", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+	}))
+
+	http.Handle("POST /id/{id}", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
 		idString := r.PathValue("id")
 		idChan <- idString
-	})
+	}))
 
-	http.HandleFunc("GET /tok", func(w http.ResponseWriter, r *http.Request) {
-		log.Println("Got request for:", r.URL.String())
+	http.Handle("GET /tok", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
 		if tok == "" {
 			tok = <-tChan
 		}
 		log.Println("Sending tok: ", tok)
 		w.Header().Add("Access-Control-Allow-Origin", "http://127.0.0.1:8080")
 		w.Write([]byte(tok))
-	})
+	}))
+
+	http.Handle("POST /art", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+		urlParam := r.URL.Query().Get("url")
+		urlParam = r.URL.Query().Get("url")
+		log.Println("converting from ", urlParam)
+	}))
 
 	pwd, _ := os.Getwd()
 	fDir := path.Join(pwd, "/static")
@@ -372,4 +387,19 @@ func listTracks(client *spotify.Client) {
 		offset += returned
 	}
 	fmt.Println(offset)
+}
+
+type middleware func(http.Handler) http.Handler
+
+type Chain []middleware
+
+func (c Chain) Then(h http.Handler) http.Handler {
+	for _, m := range slices.Backward(c) {
+		h = m(h)
+	}
+	return h
+}
+
+func (c Chain) ThenFunc(h http.HandlerFunc) http.Handler {
+	return c.Then(h)
 }
