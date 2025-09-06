@@ -36,6 +36,8 @@ var html = `
 
 // TODO: use PKCE
 // users will not have to store their client secret
+
+// TODO: use fzf and construct pseudo paths, e.g. songs/..., playlists/..., podcasts/...
 var (
 	auth = spotifyauth.New(
 		spotifyauth.WithRedirectURL(REDIRECT_URL),
@@ -122,7 +124,7 @@ func main() {
 	fmt.Println(fDir)
 
 	fs := http.FileServer(http.Dir(fDir))
-	http.Handle("/static/", http.StripPrefix("/static", fs))
+	http.Handle("/static/", stack.Then(http.StripPrefix("/static", fs)))
 
 	http.HandleFunc("/player/", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
