@@ -177,12 +177,15 @@ func main() {
 			log.Fatal(err)
 		}
 
-		devId := <-idChan
-
-		err = client.TransferPlayback(context.Background(), spotify.ID(devId), true)
-		if err != nil {
-			log.Fatal(err)
-		}
+		go func() {
+			for devId := range idChan {
+				err = client.TransferPlayback(context.Background(), spotify.ID(devId), true)
+				if err != nil {
+					log.Fatal(err)
+				}
+				log.Println("Transferred playback to ", devId)
+			}
+		}()
 
 		fmt.Printf("Found your %s (%s)\n", playerState.Device.Type, playerState.Device.Name)
 
