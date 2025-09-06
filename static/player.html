@@ -8,6 +8,7 @@
 <body>
     <h1>Spotify Web Playback SDK Quick Start</h1>
     <button id="togglePlay">Toggle Play</button>
+    <button id="nextTrack">Next Track</button>
 
     <script src="https://sdk.scdn.co/spotify-player.js"></script>
 
@@ -99,6 +100,20 @@
 
                 document.getElementById('togglePlay').onclick = function () {
                     sdk.togglePlay();
+                };
+                document.getElementById('nextTrack').onclick = async function () {
+                    sdk.nextTrack().then(() => {
+                        console.log('Skipped to next track!');
+                    });
+                    const state = await sdk.getCurrentState()
+                    console.log(state)
+                    albumArtUrl = state.track_window.current_track.album.images[2].url
+                    console.log(albumArtUrl)
+                    resp = await fetch(`/art?url=${albumArtUrl}`, {
+                        method: "POST"
+                    });
+
+                    console.log(resp)
                 };
             }
         })();

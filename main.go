@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TheZoraiz/ascii-image-converter/aic_package"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
@@ -105,8 +106,15 @@ func main() {
 
 	http.Handle("POST /art", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
 		urlParam := r.URL.Query().Get("url")
-		urlParam = r.URL.Query().Get("url")
-		log.Println("converting from ", urlParam)
+		log.Println("downloading from ", urlParam)
+		img, err := toAscii(urlParam)
+		if err != nil {
+			log.Println(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		log.Println("\n", img)
+		w.Write([]byte(img))
 	}))
 
 	pwd, _ := os.Getwd()
@@ -402,4 +410,22 @@ func (c Chain) Then(h http.Handler) http.Handler {
 
 func (c Chain) ThenFunc(h http.HandlerFunc) http.Handler {
 	return c.Then(h)
+}
+
+func toAscii(url string) (string, error) {
+
+	flags := aic_package.DefaultFlags()
+
+	flags.Dimensions = []int{50, 25}
+	flags.Colored = true
+	flags.CustomMap = " .-=+#@"
+	// flags.FontFilePath = "./RobotoMono-Regular.ttf" // If file is in current directory
+	flags.SaveBackgroundColor = [4]int{50, 50, 50, 100}
+
+	asciiArt, err := aic_package.Convert(url, flags)
+	if err != nil {
+		return "", fmt.Errorf("error converting to ASCII: %s", err)
+	}
+	return asciiArt, nil
+
 }
