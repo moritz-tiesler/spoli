@@ -163,27 +163,6 @@ func main() {
 
 		fmt.Printf("Found your %s (%s)\n", playerState.Device.Type, playerState.Device.Name)
 
-		var trackPage *spotify.SavedTrackPage
-		var offset int
-		var returned int = -1
-		// can save one request by checking returned < limit
-		for returned == -1 || returned > 0 {
-			trackPage, err = client.CurrentUsersTracks(context.Background(), spotify.Limit(50), spotify.Offset(offset))
-			if trackPage == nil {
-				break
-			}
-			tracks := trackPage.Tracks
-			if err != nil {
-				log.Fatalf("could not get saved tracks: %v", err)
-			}
-			for _, t := range tracks {
-				fmt.Println(t.Name)
-			}
-			returned = len(tracks)
-			offset += returned
-		}
-		fmt.Println(offset)
-
 		// done := make(chan struct{})
 		// runChrome(client, c.t, done)
 		// <-done
@@ -371,4 +350,26 @@ func runChrome(spotifyClient *spotify.Client, tok *oauth2.Token, done chan struc
 	log.Println("Finished. Closing browser...")
 
 	done <- struct{}{}
+}
+
+func listTracks(client *spotify.Client) {
+	var offset int
+	var returned int = -1
+	// can save one request by checking returned < limit
+	for returned == -1 || returned > 0 {
+		trackPage, err := client.CurrentUsersTracks(context.Background(), spotify.Limit(50), spotify.Offset(offset))
+		if trackPage == nil {
+			break
+		}
+		tracks := trackPage.Tracks
+		if err != nil {
+			log.Fatalf("could not get saved tracks: %v", err)
+		}
+		for _, t := range tracks {
+			fmt.Println(t.Name)
+		}
+		returned = len(tracks)
+		offset += returned
+	}
+	fmt.Println(offset)
 }
