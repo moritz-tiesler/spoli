@@ -12,85 +12,96 @@
     <script src="https://sdk.scdn.co/spotify-player.js"></script>
 
     <script>
-        function fetchToken() {
-            return new Promise((resolve, reject) => {
-                fetch('http://localhost:8080/tok', {
-                    method: "GET",
-                    // body: JSON.stringify({
-                    //     userId: 1,
-                    //     title: "Fix my bugs",
-                    //     completed: false
-                    // })
-                }).then(res => {
-                    if (!res.ok) {
-                        throw new Error(`HTTP error! status: ${res.status}`);
-                    }
-                    return res.text();
-                }).then(tok => {
-                    if (tok) {
-                        resolve(tok)
-                    } else {
-                        reject(new Error("Token not found in response"))
-                    }
-                })
+
+
+        window.onSpotifyWebPlaybackSDKReady = () => { };
+        async function waitForSpotifyWebPlaybackSDKToLoad() {
+            return new Promise(resolve => {
+                if (window.Spotify) {
+                    resolve(window.Spotify);
+                } else {
+                    window.onSpotifyWebPlaybackSDKReady = () => {
+                        resolve(window.Spotify);
+                    };
+                }
             });
+        };
+
+        async function waitUntilUserHasSelectedPlayer(sdk) {
+            return new Promise(resolve => {
+                let interval = setInterval(async () => {
+                    let state = await sdk.getCurrentState();
+                    if (state !== null) {
+                        resolve(state);
+                        clearInterval(interval);
+                    }
+                });
+            });
+        };
+
+        async function fetchToken() {
+            const resp = await fetch('http://localhost:8080/tok', {
+                method: "GET",
+                // body: JSON.stringify({
+                //     userId: 1,
+                //     title: "Fix my bugs",
+                //     completed: false
+                // })
+            })
+            if (!resp.ok) {
+                throw new Error(`HTTP error! status: ${res.status}`);
+            }
+            const tok = await resp.text();
+            return tok
         }
 
-        let token = null;
-        fetchToken()
-            .then(tok => {
-                token = tok;
-                console.log("got token: ", token)
-            }).catch(error => {
-                console.error("Failed to get token: ", error)
-            })
+        (async () => {
+            let token = await fetchToken()
 
-        let interval = undefined
-        function cb() {
-            if (token == null) {
-                if (interval == undefined) {
-                    interval = setTimeout(cb, 1000);
-                }
-                clearInterval(interval)
-                return;
-            }
-            const player = new Spotify.Player({
+            const { Player } = await waitForSpotifyWebPlaybackSDKToLoad();
+
+            const sdk = new Player({
                 name: 'Web Playback SDK Quick Start Player',
                 getOAuthToken: cb => { cb(token); },
                 volume: 0.5
             });
-            // Ready
-            player.addListener('ready', ({ device_id }) => {
-                fetch(`/id/${device_id}`,{
+            sdk.addListener('ready', ({ device_id }) => {
+                fetch(`/id/${device_id}`, {
                     method: "POST"
-                } )
+                })
                 console.log('Ready with Device ID', device_id);
             });
 
-            // Not Ready
-            player.addListener('not_ready', ({ device_id }) => {
-                console.log('Device ID has gone offline', device_id);
-            });
-            player.addListener('initialization_error', ({ message }) => {
-                console.error(message);
+            sdk.on("player_state_changed", state => {
+                // Update UI with playback state changes
             });
 
-            player.addListener('authentication_error', ({ message }) => {
-                console.error(message);
-            });
+            let connected = await sdk.connect();
 
-            player.addListener('account_error', ({ message }) => {
-                console.error(message);
-            });
+            if (connected) {
+                let state = await waitUntilUserHasSelectedPlayer(sdk);
 
-            player.connect();
+                // Not Ready
+                sdk.addListener('not_ready', ({ device_id }) => {
+                    console.log('Device ID has gone offline', device_id);
+                });
+                sdk.addListener('initialization_error', ({ message }) => {
+                    console.error(message);
+                });
 
-            document.getElementById('togglePlay').onclick = function () {
-                player.togglePlay();
-            };
-        }
+                sdk.addListener('authentication_error', ({ message }) => {
+                    console.error(message);
+                });
 
-        window.onSpotifyWebPlaybackSDKReady = () => cb();
+                sdk.addListener('account_error', ({ message }) => {
+                    console.error(message);
+                });
+
+                document.getElementById('togglePlay').onclick = function () {
+                    sdk.togglePlay();
+                };
+            }
+        })();
 
     </script>
 </body>
