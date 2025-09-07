@@ -95,6 +95,10 @@
                     method: "POST"
                 })
                 console.log('Ready with Device ID', device_id);
+                let div = document.createElement('div');
+                div.id = "deviceId";
+                div.innerHTML = `<span>${device_id}</span>`;
+                document.body.appendChild(div);
             });
 
             sdk.on("player_state_changed", state => {

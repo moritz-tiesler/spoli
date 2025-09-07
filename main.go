@@ -2,21 +2,17 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"slices"
+	"spoli/chrome"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/TheZoraiz/ascii-image-converter/aic_package"
-	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/cdproto/runtime"
-	"github.com/chromedp/chromedp"
 	"github.com/zmb3/spotify/v2"
 	spotifyauth "github.com/zmb3/spotify/v2/auth"
 	"golang.org/x/oauth2"
@@ -76,6 +72,8 @@ func main() {
 	var playerState *spotify.PlayerState
 	var tok string
 
+	var chromeInstance *chrome.Instance
+
 	loggingMiddleWare := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			log.Println("Got request for:", r.URL.String())
@@ -126,6 +124,46 @@ func main() {
 	fs := http.FileServer(http.Dir(fDir))
 	http.Handle("/static/", stack.Then(http.StripPrefix("/static", fs)))
 
+	http.Handle("/next", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+		if chromeInstance == nil {
+			log.Println("chrome instance not ready")
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		playerUrl, err := url.JoinPath("http://127.0.0.1:8080", "/static/player.html")
+		if err != nil {
+			log.Printf("invalid player url '%s': %s", playerUrl, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		err = chromeInstance.Click("nextTrack")
+		if err != nil {
+			log.Printf("error clicking nextTrack of %s: %v\n", playerUrl, err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	http.Handle("/toggle", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+		if chromeInstance == nil {
+			log.Println("chrome instance not ready")
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		playerUrl, err := url.JoinPath("http://127.0.0.1:8080", "/static/player.html")
+		if err != nil {
+			log.Printf("invalid player url '%s': %s", playerUrl, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		err = chromeInstance.Click("togglePlay")
+		if err != nil {
+			log.Printf("error clicking togglePlay of %s: %v\n", playerUrl, err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
 	http.HandleFunc("/player/", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		action := strings.TrimPrefix(r.URL.Path, "/player/")
@@ -154,8 +192,8 @@ func main() {
 
 	go func() {
 
-		url := auth.AuthURL(state)
-		fmt.Println("Please log in to Spotify by visiting the following page in your browser:", url)
+		authUrl := auth.AuthURL(state)
+		fmt.Println("Please log in to Spotify by visiting the following page in your browser:", authUrl)
 
 		// wait for auth to complete
 		c := <-ch
@@ -191,9 +229,14 @@ func main() {
 
 		fmt.Printf("Found your %s (%s)\n", playerState.Device.Type, playerState.Device.Name)
 
-		// done := make(chan struct{})
-		// runChrome(client, c.t, done)
-		// <-done
+		chromeInstance = chrome.New(client, rt)
+		pUrl, _ := url.JoinPath("http://127.0.0.1:8080", "/static/player.html")
+		err = chromeInstance.Start(pUrl)
+		if err != nil {
+			log.Println("error starting chrome: ", err)
+		}
+		log.Println("chrome instance started")
+
 	}()
 
 	err := http.ListenAndServe(":8080", nil)
@@ -226,159 +269,6 @@ func completeAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 const spotifySDKURL = "https://sdk.scdn.co/spotify-player.js"
-
-func runChrome(spotifyClient *spotify.Client, tok *oauth2.Token, done chan struct{}) {
-
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(
-		context.Background(),
-		chromedp.Headless,
-		chromedp.NoSandbox,
-	)
-	defer cancelAlloc()
-
-	taskCtx, cancelTask := chromedp.NewContext(allocCtx)
-	defer cancelTask()
-
-	// Channel to receive the device ID from the browser's JavaScript
-	deviceIDChan := make(chan string, 1)
-
-	// Mutex to protect writing to the deviceIDChan from concurrent goroutines
-	var mu sync.Mutex
-
-	// Listen for events from the browser target
-	chromedp.ListenTarget(taskCtx, func(ev interface{}) {
-		switch ev := ev.(type) {
-		case *page.EventJavascriptDialogOpening:
-			log.Printf("BROWSER DIALOG: %s - %s", ev.Type, ev.Message)
-			go func() {
-				if err := chromedp.Run(taskCtx,
-					page.HandleJavaScriptDialog(true), // Accept the dialog
-				); err != nil {
-					log.Printf("Error handling dialog: %v", err)
-				}
-			}()
-		case *runtime.EventBindingCalled:
-			// This is where we handle calls from JavaScript to our Go-exposed function
-			if ev.Name == "sendDeviceID" { // Check the binding name
-				var args []string // Assuming the JS function sends a single string argument
-				if err := json.Unmarshal([]byte(ev.Payload), &args); err != nil {
-					log.Printf("Error unmarshaling binding payload: %v", err)
-					return
-				}
-				if len(args) > 0 {
-					log.Printf("Received device ID from browser via binding: %s", args[0])
-					mu.Lock()
-					select {
-					case deviceIDChan <- args[0]: // Send to our Go channel
-						// Successfully sent
-					default:
-						log.Println("Device ID channel is already full, ignoring subsequent calls.")
-					}
-					mu.Unlock()
-				}
-			}
-		case *runtime.EventConsoleAPICalled:
-			if ev.Type == runtime.APITypeError {
-				log.Fatal(ev)
-			}
-			if ev.Type == runtime.APITypeLog {
-				log.Fatal(ev)
-			}
-
-		}
-	})
-
-	var receivedDeviceID string
-
-	spotifySDKInitJS := fmt.Sprintf(SDK_INIT_JS, tok.AccessToken)
-	err := chromedp.Run(taskCtx,
-		chromedp.Navigate("about:blank"),
-
-		// Register the binding named "sendDeviceID".
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			fmt.Println("running register")
-			return runtime.AddBinding("sendDeviceID").Do(ctx)
-		}),
-
-		// Inject the Spotify Web Playback SDK script first
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			fmt.Println("running inject playback sdk")
-			_, err := page.AddScriptToEvaluateOnNewDocument(spotifySDKURL).Do(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to add SDK script: %w", err)
-			}
-			return nil
-		}),
-
-		// Then inject our custom logic that initializes the player
-		chromedp.Evaluate(spotifySDKInitJS, nil),
-
-		// Wait for the device ID to be received from the browser via the channel
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			fmt.Println("running wait for device id")
-			select {
-			case id := <-deviceIDChan:
-				receivedDeviceID = id
-				log.Printf("Successfully captured device ID: %s", receivedDeviceID)
-				return nil
-			case <-time.After(20 * time.Second):
-				return fmt.Errorf("timed out waiting for Spotify player device ID")
-			}
-		}),
-	)
-
-	if err != nil {
-		log.Println(spotifySDKInitJS)
-		log.Fatalf("Chromedp error: %v", err)
-	}
-
-	if receivedDeviceID == "" {
-		log.Fatal("Did not receive a device ID. Cannot proceed with playback.")
-	}
-
-	spId := spotify.ID(receivedDeviceID)
-
-	log.Printf("Chromedp setup complete. Device ID: %s", receivedDeviceID)
-
-	// Now use the Spotify Web API to control playback
-	err = spotifyClient.TransferPlayback(taskCtx, spId, true)
-	if err != nil {
-		log.Fatalf("Failed to transfer playback: %v", err)
-	}
-	log.Printf("Playback transferred to headless device: %s", receivedDeviceID)
-
-	trackURI := spotify.URI("spotify:track:2PpE1b4d320mSgGkM2QdGv") // Example: "Blinding Lights"
-	err = spotifyClient.PlayOpt(taskCtx, &spotify.PlayOptions{
-		DeviceID: &spId,
-		URIs:     []spotify.URI{trackURI},
-	})
-	if err != nil {
-		log.Fatalf("Failed to play track: %v", err)
-	}
-	log.Printf("Playing track: %s on device: %s", trackURI, receivedDeviceID)
-
-	time.Sleep(10 * time.Second)
-
-	err = spotifyClient.Pause(taskCtx)
-	if err != nil {
-		log.Printf("Failed to pause playback: %v", err)
-	}
-	log.Println("Playback paused.")
-
-	time.Sleep(2 * time.Second)
-
-	err = spotifyClient.Play(taskCtx)
-	if err != nil {
-		log.Printf("Failed to resume playback: %v", err)
-	}
-	log.Println("Playback resumed.")
-
-	time.Sleep(5 * time.Second)
-
-	log.Println("Finished. Closing browser...")
-
-	done <- struct{}{}
-}
 
 func listTracks(client *spotify.Client) {
 	var offset int
