@@ -3,6 +3,7 @@ package chrome
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/chromedp/chromedp"
@@ -20,13 +21,12 @@ type Instance struct {
 func New(
 	spotifyClient *spotify.Client,
 	tok *oauth2.Token,
+	remoteChromeUrl string,
 ) *Instance {
 
-	allocCtx, allocCancel := chromedp.NewExecAllocator(
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(
 		context.Background(),
-		chromedp.Headless,
-		chromedp.NoSandbox,
-		chromedp.Flag("mute-audio", false),
+		remoteChromeUrl,
 	)
 
 	return &Instance{
@@ -38,7 +38,7 @@ func New(
 func (i *Instance) Start(host string) error {
 	ts := chromedp.Tasks{
 		chromedp.Navigate(host),
-		chromedp.WaitVisible(`#deviceId`),
+		chromedp.WaitReady(`#deviceId`),
 	}
 	err := i.Run(ts)
 	if err != nil {
@@ -69,13 +69,13 @@ func (i *Instance) Click(elementId string) error {
 }
 
 func (i *Instance) Run(tasks chromedp.Tasks) error {
-	taskCtx, cancelTask := chromedp.NewContext(i.allocCtx)
+	taskCtx, cancelTask := chromedp.NewContext(i.allocCtx, chromedp.WithDebugf(log.Printf))
 	defer cancelTask()
 	return chromedp.Run(taskCtx, tasks)
 }
 
 func (i *Instance) Snap(path string, buf *[]byte) error {
 	return i.Run(chromedp.Tasks{
-		chromedp.FullScreenshot(buf, 90),
+		chromedp.CaptureScreenshot(buf),
 	})
 }

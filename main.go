@@ -11,6 +11,7 @@ import (
 	"slices"
 	"spoli/chrome"
 	"strings"
+	"time"
 
 	"github.com/TheZoraiz/ascii-image-converter/aic_package"
 	"github.com/zmb3/spotify/v2"
@@ -34,6 +35,8 @@ var html = `
 // users will not have to store their client secret
 
 // TODO: use fzf and construct pseudo paths, e.g. songs/..., playlists/..., podcasts/...
+// TODO: start player in browser tab, send requests via terminal to this tab.
+// using chrome headless is a pain in the ass
 var (
 	auth = spotifyauth.New(
 		spotifyauth.WithRedirectURL(REDIRECT_URL),
@@ -85,7 +88,11 @@ func main() {
 		middleware(loggingMiddleWare),
 	}
 
-	http.Handle("/callback", stack.ThenFunc(completeAuth))
+	http.Handle("/callback", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+		completeAuth(w, r)
+		w.Header().Add("Content-Type", "")
+		http.Redirect(w, r, "http://127.0.0.1:8080/static/player.html", http.StatusFound)
+	}))
 
 	http.Handle("/", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
 	}))
@@ -160,6 +167,8 @@ func main() {
 		err = chromeInstance.Click("togglePlay")
 		if err != nil {
 			log.Printf("error clicking togglePlay of %s: %v\n", playerUrl, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -207,21 +216,22 @@ func main() {
 		// use the client to make calls that require authorization
 		user, err := client.CurrentUser(context.Background())
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("error getting user: %s\n", err)
 		}
 
 		fmt.Println("You are logged in as:", user.ID)
 
 		playerState, err = client.PlayerState(context.Background())
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("error getting player state: %s\n", err)
 		}
 
 		go func() {
+			<-time.After(time.Millisecond * 4000)
 			for devId := range idChan {
 				err = client.TransferPlayback(context.Background(), spotify.ID(devId), true)
 				if err != nil {
-					log.Fatal(err)
+					log.Printf("error transferring playback: %s\n", err)
 				}
 				log.Println("Transferred playback to ", devId)
 			}
@@ -229,19 +239,21 @@ func main() {
 
 		fmt.Printf("Found your %s (%s)\n", playerState.Device.Type, playerState.Device.Name)
 
-		chromeInstance = chrome.New(client, rt)
-		pUrl, _ := url.JoinPath("http://127.0.0.1:8080", "/static/player.html")
-		err = chromeInstance.Start(pUrl)
-		if err != nil {
-			log.Println("error starting chrome: ", err)
-		}
-		log.Println("chrome instance started")
+		// we use the browser and not a headless instance
+		// chromeInstance = chrome.New(client, rt, "ws://127.0.0.1:9222")
+
+		// pUrl, _ := url.JoinPath("http://127.0.0.1:8080", "/static/player.html")
+		// err = chromeInstance.Start(pUrl)
+		// if err != nil {
+		// 	log.Println("error starting chrome: ", err)
+		// }
+		// log.Println("chrome instance started")
 
 	}()
 
 	err := http.ListenAndServe(":8080", nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("error starting server: %s\n", err)
 	}
 }
 
@@ -249,7 +261,7 @@ func completeAuth(w http.ResponseWriter, r *http.Request) {
 	tok, err := auth.Token(r.Context(), state, r)
 	if err != nil {
 		http.Error(w, "Couldn't get token", http.StatusForbidden)
-		log.Fatal(err)
+		log.Fatalf("error getting auth token: %s\n", err)
 	}
 	if st := r.FormValue("state"); st != state {
 		http.NotFound(w, r)
@@ -258,7 +270,7 @@ func completeAuth(w http.ResponseWriter, r *http.Request) {
 
 	// use the token to get an authenticated client
 	client := spotify.New(auth.Client(r.Context(), tok))
-	fmt.Fprintf(w, "Login Completed!")
+	// fmt.Fprintf(w, "Login Completed!")
 	ch <- struct {
 		c *spotify.Client
 		t *oauth2.Token
