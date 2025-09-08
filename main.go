@@ -63,6 +63,8 @@ var (
 	idChan = make(chan string, 1)
 	tChan  = make(chan string, 1)
 	state  = "abc123"
+
+	LOG_FILE = "/tmp/spoli.logs"
 )
 
 // TODO: on app startup
@@ -74,6 +76,7 @@ type Broker struct {
 	*http.Server
 	outgoing chan event.Event
 	incoming chan event.Event
+	client   *Client
 }
 
 func (b Broker) Source() chan event.Event {
@@ -84,9 +87,11 @@ func (b Broker) Sink() chan event.Event {
 	return b.incoming
 }
 
-func (b Broker) init() {
+func (b *Broker) init() {
 	go func() {
-		for range b.incoming {
+		for e := range b.incoming {
+			// fmt.Println("got event, client is nil: ", b.client == nil)
+			b.client.handlePlayerEvent(context.Background(), e)
 			// log.Println("INCOMING: ", e.String())
 		}
 	}()
@@ -100,19 +105,26 @@ func (b Broker) init() {
 
 func main() {
 
-	router := http.NewServeMux()
-	setupRoutes(router)
+	f, err := os.OpenFile(LOG_FILE, os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatalf("could not open log file: %s", err)
+	}
 
+	log.SetOutput(f)
+
+	router := http.NewServeMux()
 	s := &http.Server{
 		Addr:    ":8080",
 		Handler: router,
 	}
-	broker := Broker{
+
+	broker := &Broker{
 		Server:   s,
 		outgoing: make(chan event.Event, 1),
 		incoming: make(chan event.Event, 1),
 	}
 
+	setupRoutes(router, broker)
 	broker.init()
 
 	go func() {
@@ -209,7 +221,7 @@ func toAscii(url string) (string, error) {
 
 }
 
-func setupRoutes(router *http.ServeMux) {
+func setupRoutes(router *http.ServeMux, broker *Broker) {
 	// router.Handle("/", http.FileServer(http.Dir("./static")))
 
 	// router.HandleFunc("POST /url", h.PostURL())
@@ -228,9 +240,12 @@ func setupRoutes(router *http.ServeMux) {
 		c := <-ch
 		client = c.c
 
-		fmt.Printf("Found your %s\n", c.t.RefreshToken)
+		// fmt.Println("client is nil: ", client == nil)
+		broker.client = &Client{client}
+
+		log.Printf("Found your %s\n", c.t.RefreshToken)
 		rt, _ := auth.RefreshToken(context.Background(), c.t)
-		fmt.Printf("Found your refresh %s\n", rt.AccessToken)
+		log.Printf("Found your refresh %s\n", rt.AccessToken)
 
 		tChan <- rt.AccessToken
 		// use the client to make calls that require authorization
@@ -239,7 +254,7 @@ func setupRoutes(router *http.ServeMux) {
 			log.Fatalf("error getting user: %s\n", err)
 		}
 
-		fmt.Println("You are logged in as:", user.ID)
+		log.Println("You are logged in as:", user.ID)
 
 		playerState, err = client.PlayerState(context.Background())
 		if err != nil {
@@ -256,7 +271,7 @@ func setupRoutes(router *http.ServeMux) {
 			}
 		}()
 
-		fmt.Printf("Found your %s (%s)\n", playerState.Device.Type, playerState.Device.Name)
+		log.Printf("Found your %s (%s)\n", playerState.Device.Type, playerState.Device.Name)
 	}()
 
 	loggingMiddleWare := func(next http.Handler) http.Handler {
@@ -308,7 +323,7 @@ func setupRoutes(router *http.ServeMux) {
 
 	pwd, _ := os.Getwd()
 	fDir := path.Join(pwd, "/static")
-	fmt.Println(fDir)
+	// fmt.Println(fDir)
 
 	fs := http.FileServer(http.Dir(fDir))
 	router.Handle("/static/", stack.Then(http.StripPrefix("/static", fs)))
@@ -344,7 +359,38 @@ func setupRoutes(router *http.ServeMux) {
 		}
 
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, html)
+		// fmt.Fprint(w, html)
 	})
 
+}
+
+type Client struct {
+	*spotify.Client
+}
+
+func (c Client) handlePlayerEvent(ctx context.Context, e event.Event) error {
+	var err error
+	ps, err := c.PlayerState(context.Background())
+	if err != nil {
+		return fmt.Errorf("error reading playerstate: %s", err)
+	}
+	switch e {
+	case event.TOGGLE_PLAY:
+		if ps.Playing {
+			err = c.Pause(ctx)
+			break
+		}
+		err = c.Play(ctx)
+	// case :
+	// 	err = client.Pause(ctx)
+	case event.NEXT:
+		err = c.Next(ctx)
+	case event.PREV:
+		err = c.Previous(ctx)
+		// case "shuffle":
+		// 	playerState.ShuffleState = !playerState.ShuffleState
+		// 	err = client.Shuffle(ctx, playerState.ShuffleState)
+		// }
+	}
+	return err
 }
