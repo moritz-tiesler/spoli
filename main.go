@@ -5,13 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"slices"
-	"spoli/chrome"
 	"strings"
-	"time"
 
 	"github.com/TheZoraiz/ascii-image-converter/aic_package"
 	"github.com/zmb3/spotify/v2"
@@ -59,6 +56,7 @@ var (
 	},
 	)
 
+	// needs closing on exit
 	idChan = make(chan string, 1)
 	tChan  = make(chan string, 1)
 	state  = "abc123"
@@ -74,8 +72,6 @@ func main() {
 	var client *spotify.Client
 	var playerState *spotify.PlayerState
 	var tok string
-
-	var chromeInstance *chrome.Instance
 
 	loggingMiddleWare := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -132,45 +128,11 @@ func main() {
 	http.Handle("/static/", stack.Then(http.StripPrefix("/static", fs)))
 
 	http.Handle("/next", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
-		if chromeInstance == nil {
-			log.Println("chrome instance not ready")
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		playerUrl, err := url.JoinPath("http://127.0.0.1:8080", "/static/player.html")
-		if err != nil {
-			log.Printf("invalid player url '%s': %s", playerUrl, err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		err = chromeInstance.Click("nextTrack")
-		if err != nil {
-			log.Printf("error clicking nextTrack of %s: %v\n", playerUrl, err)
-		}
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusNotImplemented)
 	}))
 
 	http.Handle("/toggle", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
-		if chromeInstance == nil {
-			log.Println("chrome instance not ready")
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		playerUrl, err := url.JoinPath("http://127.0.0.1:8080", "/static/player.html")
-		if err != nil {
-			log.Printf("invalid player url '%s': %s", playerUrl, err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		err = chromeInstance.Click("togglePlay")
-		if err != nil {
-			log.Printf("error clicking togglePlay of %s: %v\n", playerUrl, err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusNotImplemented)
 	}))
 
 	http.HandleFunc("/player/", func(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +189,6 @@ func main() {
 		}
 
 		go func() {
-			<-time.After(time.Millisecond * 4000)
 			for devId := range idChan {
 				err = client.TransferPlayback(context.Background(), spotify.ID(devId), true)
 				if err != nil {
@@ -238,17 +199,6 @@ func main() {
 		}()
 
 		fmt.Printf("Found your %s (%s)\n", playerState.Device.Type, playerState.Device.Name)
-
-		// we use the browser and not a headless instance
-		// chromeInstance = chrome.New(client, rt, "ws://127.0.0.1:9222")
-
-		// pUrl, _ := url.JoinPath("http://127.0.0.1:8080", "/static/player.html")
-		// err = chromeInstance.Start(pUrl)
-		// if err != nil {
-		// 	log.Println("error starting chrome: ", err)
-		// }
-		// log.Println("chrome instance started")
-
 	}()
 
 	err := http.ListenAndServe(":8080", nil)
