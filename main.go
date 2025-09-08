@@ -12,6 +12,7 @@ import (
 
 	"github.com/TheZoraiz/ascii-image-converter/aic_package"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/moritz-tiesler/spoli/event"
 	"github.com/moritz-tiesler/spoli/tui"
 	"github.com/zmb3/spotify/v2"
 	spotifyauth "github.com/zmb3/spotify/v2/auth"
@@ -69,148 +70,59 @@ var (
 // if expired send old token to spotify to get new token
 // store new token
 
-func main() {
+type Broker struct {
+	*http.Server
+	outgoing chan event.Event
+	incoming chan event.Event
+}
 
-	var client *spotify.Client
-	var playerState *spotify.PlayerState
-	var tok string
+func (b Broker) Source() chan event.Event {
+	return b.outgoing
+}
 
-	loggingMiddleWare := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			log.Println("Got request for:", r.URL.String())
-			next.ServeHTTP(w, r)
-		})
-	}
+func (b Broker) Sink() chan event.Event {
+	return b.incoming
+}
 
-	var stack Chain = []middleware{
-		middleware(loggingMiddleWare),
-	}
-
-	http.Handle("/callback", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
-		completeAuth(w, r)
-		w.Header().Add("Content-Type", "")
-		http.Redirect(w, r, "http://127.0.0.1:8080/static/player.html", http.StatusFound)
-	}))
-
-	http.Handle("/", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
-	}))
-
-	http.Handle("POST /id/{id}", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
-		idString := r.PathValue("id")
-		idChan <- idString
-	}))
-
-	http.Handle("GET /tok", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tok == "" {
-			tok = <-tChan
-		}
-		log.Println("Sending tok: ", tok)
-		w.Header().Add("Access-Control-Allow-Origin", "http://127.0.0.1:8080")
-		w.Write([]byte(tok))
-	}))
-
-	http.Handle("POST /art", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
-		urlParam := r.URL.Query().Get("url")
-		log.Println("downloading from ", urlParam)
-		img, err := toAscii(urlParam)
-		if err != nil {
-			log.Println(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		log.Println("\n", img)
-		w.Write([]byte(img))
-	}))
-
-	pwd, _ := os.Getwd()
-	fDir := path.Join(pwd, "/static")
-	fmt.Println(fDir)
-
-	fs := http.FileServer(http.Dir(fDir))
-	http.Handle("/static/", stack.Then(http.StripPrefix("/static", fs)))
-
-	http.Handle("/next", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-	}))
-
-	http.Handle("/toggle", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-	}))
-
-	http.HandleFunc("/player/", func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		action := strings.TrimPrefix(r.URL.Path, "/player/")
-		fmt.Println("Got request for:", action)
-		var err error
-		switch action {
-		case "play":
-			err = client.Play(ctx)
-		case "pause":
-			err = client.Pause(ctx)
-		case "next":
-			err = client.Next(ctx)
-		case "previous":
-			err = client.Previous(ctx)
-		case "shuffle":
-			playerState.ShuffleState = !playerState.ShuffleState
-			err = client.Shuffle(ctx, playerState.ShuffleState)
-		}
-		if err != nil {
-			log.Print(err)
-		}
-
-		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, html)
-	})
-
+func (b Broker) init() {
 	go func() {
-
-		authUrl := auth.AuthURL(state)
-		fmt.Println("Please log in to Spotify by visiting the following page in your browser:", authUrl)
-
-		// wait for auth to complete
-		c := <-ch
-		client = c.c
-
-		fmt.Printf("Found your %s\n", c.t.RefreshToken)
-		rt, _ := auth.RefreshToken(context.Background(), c.t)
-		fmt.Printf("Found your refresh %s\n", rt.AccessToken)
-
-		tChan <- rt.AccessToken
-		// use the client to make calls that require authorization
-		user, err := client.CurrentUser(context.Background())
-		if err != nil {
-			log.Fatalf("error getting user: %s\n", err)
+		for range b.incoming {
+			// log.Println("INCOMING: ", e.String())
 		}
-
-		fmt.Println("You are logged in as:", user.ID)
-
-		playerState, err = client.PlayerState(context.Background())
-		if err != nil {
-			log.Fatalf("error getting player state: %s\n", err)
-		}
-
-		go func() {
-			for devId := range idChan {
-				err = client.TransferPlayback(context.Background(), spotify.ID(devId), true)
-				if err != nil {
-					log.Printf("error transferring playback: %s\n", err)
-				}
-				log.Println("Transferred playback to ", devId)
-			}
-		}()
-
-		fmt.Printf("Found your %s (%s)\n", playerState.Device.Type, playerState.Device.Name)
 	}()
 
 	go func() {
-		err := http.ListenAndServe(":8080", nil)
+		for range b.outgoing {
+			// log.Println("OUTGOING", e.String())
+		}
+	}()
+}
+
+func main() {
+
+	router := http.NewServeMux()
+	setupRoutes(router)
+
+	s := &http.Server{
+		Addr:    ":8080",
+		Handler: router,
+	}
+	broker := Broker{
+		Server:   s,
+		outgoing: make(chan event.Event, 1),
+		incoming: make(chan event.Event, 1),
+	}
+
+	broker.init()
+
+	go func() {
+		err := broker.Server.ListenAndServe()
 		if err != nil {
 			log.Fatalf("error starting server: %s\n", err)
 		}
 	}()
 
-	p := tea.NewProgram(tui.InitialModel())
+	p := tea.NewProgram(tui.InitialModel(broker))
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Alas, there's been an error: %v", err)
 		os.Exit(1)
@@ -294,5 +206,145 @@ func toAscii(url string) (string, error) {
 		return "", fmt.Errorf("error converting to ASCII: %s", err)
 	}
 	return asciiArt, nil
+
+}
+
+func setupRoutes(router *http.ServeMux) {
+	// router.Handle("/", http.FileServer(http.Dir("./static")))
+
+	// router.HandleFunc("POST /url", h.PostURL())
+	// router.HandleFunc("GET /url/{short}", h.GetURL())
+
+	var client *spotify.Client
+	var playerState *spotify.PlayerState
+	var tok string
+
+	go func() {
+
+		authUrl := auth.AuthURL(state)
+		fmt.Println("Please log in to Spotify by visiting the following page in your browser:", authUrl)
+
+		// wait for auth to complete
+		c := <-ch
+		client = c.c
+
+		fmt.Printf("Found your %s\n", c.t.RefreshToken)
+		rt, _ := auth.RefreshToken(context.Background(), c.t)
+		fmt.Printf("Found your refresh %s\n", rt.AccessToken)
+
+		tChan <- rt.AccessToken
+		// use the client to make calls that require authorization
+		user, err := client.CurrentUser(context.Background())
+		if err != nil {
+			log.Fatalf("error getting user: %s\n", err)
+		}
+
+		fmt.Println("You are logged in as:", user.ID)
+
+		playerState, err = client.PlayerState(context.Background())
+		if err != nil {
+			log.Fatalf("error getting player state: %s\n", err)
+		}
+
+		go func() {
+			for devId := range idChan {
+				err = client.TransferPlayback(context.Background(), spotify.ID(devId), true)
+				if err != nil {
+					log.Printf("error transferring playback: %s\n", err)
+				}
+				log.Println("Transferred playback to ", devId)
+			}
+		}()
+
+		fmt.Printf("Found your %s (%s)\n", playerState.Device.Type, playerState.Device.Name)
+	}()
+
+	loggingMiddleWare := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			log.Println("Got request for:", r.URL.String())
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	var stack Chain = []middleware{
+		middleware(loggingMiddleWare),
+	}
+
+	router.Handle("/callback", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+		completeAuth(w, r)
+		w.Header().Add("Content-Type", "")
+		http.Redirect(w, r, "http://127.0.0.1:8080/static/player.html", http.StatusFound)
+	}))
+
+	router.Handle("/", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+	}))
+
+	router.Handle("POST /id/{id}", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+		idString := r.PathValue("id")
+		idChan <- idString
+	}))
+
+	router.Handle("GET /tok", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tok == "" {
+			tok = <-tChan
+		}
+		log.Println("Sending tok: ", tok)
+		w.Header().Add("Access-Control-Allow-Origin", "http://127.0.0.1:8080")
+		w.Write([]byte(tok))
+	}))
+
+	router.Handle("POST /art", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+		urlParam := r.URL.Query().Get("url")
+		log.Println("downloading from ", urlParam)
+		img, err := toAscii(urlParam)
+		if err != nil {
+			log.Println(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		log.Println("\n", img)
+		w.Write([]byte(img))
+	}))
+
+	pwd, _ := os.Getwd()
+	fDir := path.Join(pwd, "/static")
+	fmt.Println(fDir)
+
+	fs := http.FileServer(http.Dir(fDir))
+	router.Handle("/static/", stack.Then(http.StripPrefix("/static", fs)))
+
+	router.Handle("/next", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotImplemented)
+	}))
+
+	router.Handle("/toggle", stack.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotImplemented)
+	}))
+
+	router.HandleFunc("/player/", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		action := strings.TrimPrefix(r.URL.Path, "/player/")
+		fmt.Println("Got request for:", action)
+		var err error
+		switch action {
+		case "play":
+			err = client.Play(ctx)
+		case "pause":
+			err = client.Pause(ctx)
+		case "next":
+			err = client.Next(ctx)
+		case "previous":
+			err = client.Previous(ctx)
+		case "shuffle":
+			playerState.ShuffleState = !playerState.ShuffleState
+			err = client.Shuffle(ctx, playerState.ShuffleState)
+		}
+		if err != nil {
+			log.Print(err)
+		}
+
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, html)
+	})
 
 }
