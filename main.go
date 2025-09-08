@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/TheZoraiz/ascii-image-converter/aic_package"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/moritz-tiesler/spoli/tui"
 	"github.com/zmb3/spotify/v2"
 	spotifyauth "github.com/zmb3/spotify/v2/auth"
 	"golang.org/x/oauth2"
@@ -201,9 +203,17 @@ func main() {
 		fmt.Printf("Found your %s (%s)\n", playerState.Device.Type, playerState.Device.Name)
 	}()
 
-	err := http.ListenAndServe(":8080", nil)
-	if err != nil {
-		log.Fatalf("error starting server: %s\n", err)
+	go func() {
+		err := http.ListenAndServe(":8080", nil)
+		if err != nil {
+			log.Fatalf("error starting server: %s\n", err)
+		}
+	}()
+
+	p := tea.NewProgram(tui.InitialModel())
+	if _, err := p.Run(); err != nil {
+		fmt.Printf("Alas, there's been an error: %v", err)
+		os.Exit(1)
 	}
 }
 
