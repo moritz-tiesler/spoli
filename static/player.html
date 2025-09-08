@@ -30,6 +30,7 @@
 <body>
     <h1>Spotify Web Playback SDK Quick Start</h1>
     <button id="togglePlay">Toggle Play</button>
+    <button id="previousTrack">Previous Track</button>
     <button id="nextTrack">Next Track</button>
     <div id="ascii-output">Loading...</div>
 
@@ -128,6 +129,11 @@
 
                 document.getElementById('togglePlay').onclick = function () {
                     sdk.togglePlay();
+                };
+                document.getElementById('previousTrack').onclick = async function () {
+                    sdk.previousTrack().then(() => {
+                        console.log('Went back to previous track!');
+                    });
                 };
                 document.getElementById('nextTrack').onclick = async function () {
                     sdk.nextTrack().then(() => {
