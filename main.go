@@ -114,6 +114,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("could not open log file: %s", err)
 	}
+	defer f.Close()
 
 	log.SetOutput(f)
 

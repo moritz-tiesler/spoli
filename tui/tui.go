@@ -6,6 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/moritz-tiesler/spoli/event"
+
+	"github.com/charmbracelet/bubbles/viewport"
 )
 
 type Broker interface {
@@ -17,10 +19,16 @@ type model struct {
 	choices  []string         // items on the to-do list
 	cursor   int              // which to-do list item our cursor is pointing at
 	selected map[int]struct{} // which to-do items are selected
-	broker   Broker
+
+	songInfo tea.Model
+
+	broker Broker
+
+	viewport viewport.Model
 }
 
 func InitialModel(b Broker) model {
+
 	return model{
 		// Our to-do list is a grocery list
 		choices: []string{
@@ -33,7 +41,9 @@ func InitialModel(b Broker) model {
 		// the  map like a mathematical set. The keys refer to the indexes
 		// of the `choices` slice, above.
 		selected: make(map[int]struct{}),
+		songInfo: songInfo{},
 		broker:   b,
+		viewport: viewport.New(30, 5),
 	}
 }
 
@@ -67,9 +77,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 
-		// The "enter" key and the spacebar (a literal space) toggle
-		// the selected state for the item that the cursor is pointing at.
+			// The "enter" key and the spacebar (a literal space) toggle
+			// the selected state for the item that the cursor is pointing at.
 		case "enter", " ":
+			var songName string
 			// _, ok := m.selected[m.cursor]
 			// if ok {
 			// 	delete(m.selected, m.cursor)
@@ -86,21 +97,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					event.TOGGLE_PLAY,
 					func() <-chan time.Time { return time.After(time.Second * 2) },
 				)
+				songName = event.TOGGLE_PLAY.String()
 			case 1:
 				sendOrTimeout(
 					m.broker.Sink(),
 					event.PREV,
 					func() <-chan time.Time { return time.After(time.Second * 2) },
 				)
+				songName = event.PREV.String()
 			case 2:
 				sendOrTimeout(
 					m.broker.Sink(),
 					event.NEXT,
 					func() <-chan time.Time { return time.After(time.Second * 2) },
 				)
+				songName = event.NEXT.String()
 			}
 
+			m.songInfo, _ = m.songInfo.Update("song" + songName)
 		}
+
 	}
 
 	// Return the updated model to the Bubble Tea runtime for processing.
@@ -134,8 +150,14 @@ func (m model) View() string {
 	// The footer
 	s += "\nPress q to quit.\n"
 
+	gap := "\n\n"
 	// Send the UI for rendering
-	return s
+	return fmt.Sprintf(
+		"%s%s%s",
+		s,
+		gap,
+		m.songInfo.View(),
+	)
 }
 
 func sendOrTimeout(ch chan<- event.Event, v event.Event, or func() <-chan time.Time) {
@@ -143,4 +165,26 @@ func sendOrTimeout(ch chan<- event.Event, v event.Event, or func() <-chan time.T
 	case ch <- v:
 	case <-or():
 	}
+}
+
+type songInfo struct {
+	text string
+}
+
+func (si songInfo) Init() tea.Cmd {
+	return nil
+}
+
+func (si songInfo) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case string:
+		si.text = msg
+	default:
+
+	}
+	return si, nil
+}
+
+func (si songInfo) View() string {
+	return si.text
 }
