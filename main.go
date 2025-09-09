@@ -9,6 +9,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/TheZoraiz/ascii-image-converter/aic_package"
 	tea "github.com/charmbracelet/bubbletea"
@@ -86,13 +87,41 @@ func (b Broker) Sink() chan event.Event {
 	return b.incoming
 }
 
+func (b Broker) FlushSource() {
+L:
+	for {
+		select {
+		case _, ok := <-b.outgoing:
+			if !ok { //ch is closed //immediately return err
+				break L
+			}
+		default: //all other case not-ready: means nothing in ch for now
+			break L
+		}
+	}
+}
+
+func (b Broker) FlushSink() {
+L:
+	for {
+		select {
+		case _, ok := <-b.incoming:
+			if !ok { //ch is closed //immediately return err
+				break L
+			}
+		default: //all other case not-ready: means nothing in ch for now
+			break L
+		}
+	}
+}
+
 func (b *Broker) init() {
 	go func() {
 		for e := range b.incoming {
 			log.Println("got event ", e.String())
 			// fmt.Println("got event, client is nil: ", b.client == nil)
 
-			err := b.client.handlePlayerEvent(context.Background(), e)
+			err := b.client.handlePlayerEvent(context.Background(), e, *b)
 			if err != nil {
 				log.Printf("error handling %s: %s\n", e.String(), err)
 			}
@@ -101,9 +130,9 @@ func (b *Broker) init() {
 	}()
 
 	go func() {
-		for range b.outgoing {
-			// log.Println("OUTGOING", e.String())
-		}
+		// for range b.outgoing {
+		// log.Println("OUTGOING", e.String())
+		// }
 	}()
 }
 
@@ -377,38 +406,106 @@ type Client struct {
 	*spotify.Client
 }
 
-func (c Client) handlePlayerEvent(ctx context.Context, e event.Event) error {
-	var err error
-	ps, err := c.PlayerState(context.Background())
-	currentDev := ps.Device
-	if !currentDev.Active {
-		return fmt.Errorf(
-			"error handling event %s: current player %s is not active player\n",
-			e.String(), ps.Device.ID,
-		)
+func (c Client) stateChanged(ctx context.Context) (chan *spotify.PlayerState, error) {
+	initial, err := c.PlayerState(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("error polling state change: %s", err)
 	}
 
-	log.Printf("Player state: %+v\n", ps)
+	ch := make(chan *spotify.PlayerState, 1)
+	t := time.After(3 * time.Second)
+
+	diff := func(old, new *spotify.PlayerState) bool {
+		if old.CurrentlyPlaying.Item.Name != new.CurrentlyPlaying.Item.Name {
+			return true
+		}
+		return false
+	}
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				close(ch)
+				return
+			case <-t:
+				close(ch)
+				return
+			default:
+				newState, _ := c.PlayerState(ctx)
+				if diff(initial, newState) {
+					ch <- newState
+					return
+				} else {
+					<-time.After(time.Millisecond * 500)
+				}
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
+func (c Client) handlePlayerEvent(ctx context.Context, e event.Event, b Broker) error {
+	var err error
+	initialPs, err := c.PlayerState(ctx)
+
 	if err != nil {
 		return fmt.Errorf("error reading playerstate: %s", err)
 	}
-	switch e {
-	case event.TOGGLE_PLAY:
-		if ps.Playing {
+	log.Printf("Player state: %+v\n", initialPs)
+	currentDev := initialPs.Device
+	if !currentDev.Active {
+		return fmt.Errorf(
+			"error handling event %s: current player %s is not active player\n",
+			e.String(), initialPs.Device.ID,
+		)
+	}
+
+	switch e.(type) {
+	case event.TogglePlay:
+		if initialPs.Playing {
 			err = c.Pause(ctx)
 			break
 		}
 		err = c.Play(ctx)
 	// case :
 	// 	err = client.Pause(ctx)
-	case event.NEXT:
+	case event.Next:
 		err = c.Next(ctx)
-	case event.PREV:
+		log.Println("called next")
+		sig, err := c.stateChanged(ctx)
+		log.Println("called stateChanged")
+		if err != nil {
+			log.Printf("error reading playerstate: %s\n", err)
+			break
+		}
+		ps := <-sig
+		if ps == nil {
+			log.Println("nil state received")
+			break
+		}
+		log.Println("new state received")
+		newSong := ps.CurrentlyPlaying.Item.Name
+		log.Println("new song: ", newSong)
+		b.Source() <- event.New(
+			event.SONGCHANGE,
+			map[any]any{"songName": newSong},
+		)
+
+	case event.Prev:
 		err = c.Previous(ctx)
-		// case "shuffle":
-		// 	playerState.ShuffleState = !playerState.ShuffleState
-		// 	err = client.Shuffle(ctx, playerState.ShuffleState)
-		// }
+		ps, err := c.PlayerState(ctx)
+		if err != nil {
+			log.Printf("error reading playerstate: %s\n", err)
+			break
+		}
+		newSong := ps.CurrentlyPlaying.Item.Name
+		log.Println("new song: ", newSong)
+		b.Source() <- event.New(
+			event.SONGCHANGE,
+			map[any]any{"songName": newSong},
+		)
 	}
 	return err
 }

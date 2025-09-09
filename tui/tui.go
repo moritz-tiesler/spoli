@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"log"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,6 +14,8 @@ import (
 type Broker interface {
 	Source() chan event.Event
 	Sink() chan event.Event
+	FlushSource()
+	FlushSink()
 }
 
 type model struct {
@@ -80,7 +83,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The "enter" key and the spacebar (a literal space) toggle
 			// the selected state for the item that the cursor is pointing at.
 		case "enter", " ":
-			var songName string
 			// _, ok := m.selected[m.cursor]
 			// if ok {
 			// 	delete(m.selected, m.cursor)
@@ -94,27 +96,44 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case 0:
 				sendOrTimeout(
 					m.broker.Sink(),
-					event.TOGGLE_PLAY,
+					event.New(event.TOGGLE_PLAY, nil),
 					func() <-chan time.Time { return time.After(time.Second * 2) },
 				)
-				songName = event.TOGGLE_PLAY.String()
 			case 1:
+				m.broker.FlushSource()
 				sendOrTimeout(
 					m.broker.Sink(),
-					event.PREV,
+					event.New(event.PREV, nil),
 					func() <-chan time.Time { return time.After(time.Second * 2) },
 				)
-				songName = event.PREV.String()
+				e := <-m.broker.Source()
+				if newSongEvent, ok := e.(event.SongChange); ok {
+					d := newSongEvent.Data()
+					song := d["songName"]
+					m.songInfo, _ = m.songInfo.Update(song)
+				} else {
+					log.Printf("expected song change event, got %+v", e)
+					m.songInfo, _ = m.songInfo.Update("ERROR")
+				}
 			case 2:
+				m.broker.FlushSource()
 				sendOrTimeout(
 					m.broker.Sink(),
-					event.NEXT,
+					event.New(event.NEXT, nil),
 					func() <-chan time.Time { return time.After(time.Second * 2) },
 				)
-				songName = event.NEXT.String()
+				// songName = event.NEXT.String()
+				e := <-m.broker.Source()
+				if newSongEvent, ok := e.(event.SongChange); ok {
+					d := newSongEvent.Data()
+					song := d["songName"]
+					m.songInfo, _ = m.songInfo.Update(song)
+				} else {
+					log.Printf("expected song change event, got %+v", e)
+					m.songInfo, _ = m.songInfo.Update("ERROR")
+				}
 			}
 
-			m.songInfo, _ = m.songInfo.Update("song" + songName)
 		}
 
 	}
