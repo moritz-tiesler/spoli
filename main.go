@@ -35,7 +35,6 @@ var html = `
 // users will not have to store their client secret
 
 // TODO: use fzf and construct pseudo paths, e.g. songs/..., playlists/..., podcasts/...
-// TODO: start player in browser tab, send requests via terminal to this tab.
 // using chrome headless is a pain in the ass
 var (
 	auth = spotifyauth.New(
@@ -90,8 +89,13 @@ func (b Broker) Sink() chan event.Event {
 func (b *Broker) init() {
 	go func() {
 		for e := range b.incoming {
+			log.Println("got event ", e.String())
 			// fmt.Println("got event, client is nil: ", b.client == nil)
-			b.client.handlePlayerEvent(context.Background(), e)
+
+			err := b.client.handlePlayerEvent(context.Background(), e)
+			if err != nil {
+				log.Printf("error handling %s: %s\n", e.String(), err)
+			}
 			// log.Println("INCOMING: ", e.String())
 		}
 	}()
@@ -105,7 +109,8 @@ func (b *Broker) init() {
 
 func main() {
 
-	f, err := os.OpenFile(LOG_FILE, os.O_CREATE|os.O_APPEND, 0644)
+	f, err := os.OpenFile(LOG_FILE, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+
 	if err != nil {
 		log.Fatalf("could not open log file: %s", err)
 	}
@@ -153,7 +158,9 @@ func completeAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// use the token to get an authenticated client
-	client := spotify.New(auth.Client(r.Context(), tok))
+	client := spotify.New(auth.Client(r.Context(), tok),
+		spotify.WithRetry(true),
+	)
 	// fmt.Fprintf(w, "Login Completed!")
 	ch <- struct {
 		c *spotify.Client
@@ -231,6 +238,7 @@ func setupRoutes(router *http.ServeMux, broker *Broker) {
 	var playerState *spotify.PlayerState
 	var tok string
 
+	// TODO: pull this out and pass client to router
 	go func() {
 
 		authUrl := auth.AuthURL(state)
@@ -371,6 +379,15 @@ type Client struct {
 func (c Client) handlePlayerEvent(ctx context.Context, e event.Event) error {
 	var err error
 	ps, err := c.PlayerState(context.Background())
+	currentDev := ps.Device
+	if !currentDev.Active {
+		return fmt.Errorf(
+			"error handling event %s: current player %s is not active player\n",
+			e.String(), ps.Device.ID,
+		)
+	}
+
+	log.Printf("Player state: %+v\n", ps)
 	if err != nil {
 		return fmt.Errorf("error reading playerstate: %s", err)
 	}
