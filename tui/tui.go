@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -30,9 +31,21 @@ type model struct {
 	viewport viewport.Model
 }
 
+// TODO pub sub model: models sub to broker channel events
 func InitialModel(b Broker) model {
 
-	return model{
+	go func() {
+		for e := range b.Source() {
+			log.Printf("Dispatching %s\n", e)
+			log.Printf("%+v\n", subs)
+			cbs := subs[e.String()]
+			for _, cb := range cbs {
+				log.Printf("Dispatching %s to %T\n", e, cb)
+				cb(e)
+			}
+		}
+	}()
+	m := model{
 		// Our to-do list is a grocery list
 		choices: []string{
 			event.TOGGLE_PLAY.String(),
@@ -46,8 +59,23 @@ func InitialModel(b Broker) model {
 		selected: make(map[int]struct{}),
 		songInfo: songInfo{},
 		broker:   b,
-		viewport: viewport.New(30, 5),
+		// viewport: viewport.New(30, 5),
 	}
+
+	sub(event.New(event.SONGCHANGE, nil), func(e event.Event) {
+		if newSongEvent, ok := e.(event.SongChange); ok {
+			d := newSongEvent.Data()
+			song := d["songName"]
+			m.songInfo, _ = m.songInfo.Update(song)
+		} else {
+			log.Printf("expected song change event, got %+v", e)
+			m.songInfo, _ = m.songInfo.Update("ERROR")
+		}
+		log.Printf("Calling base model update")
+		m.Update(m.songInfo)
+	})
+
+	return m
 }
 
 func (m model) Init() tea.Cmd {
@@ -59,6 +87,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	// Is it a key press?
+	case songInfo:
+		log.Printf("base model received songInfo=%v\n", msg)
+		m.songInfo = msg
+		m.View()
+		// TODO: how to pass new songinfo into update cycle?
 	case tea.KeyMsg:
 
 		// Cool, what was the actual key pressed?
@@ -100,38 +133,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					func() <-chan time.Time { return time.After(time.Second * 2) },
 				)
 			case 1:
-				m.broker.FlushSource()
+				// m.broker.FlushSource()
 				sendOrTimeout(
 					m.broker.Sink(),
 					event.New(event.PREV, nil),
 					func() <-chan time.Time { return time.After(time.Second * 2) },
 				)
-				e := <-m.broker.Source()
-				if newSongEvent, ok := e.(event.SongChange); ok {
-					d := newSongEvent.Data()
-					song := d["songName"]
-					m.songInfo, _ = m.songInfo.Update(song)
-				} else {
-					log.Printf("expected song change event, got %+v", e)
-					m.songInfo, _ = m.songInfo.Update("ERROR")
-				}
+				// e := <-m.broker.Source()
+				// if newSongEvent, ok := e.(event.SongChange); ok {
+				// 	d := newSongEvent.Data()
+				// 	song := d["songName"]
+				// 	m.songInfo, _ = m.songInfo.Update(song)
+				// } else {
+				// 	log.Printf("expected song change event, got %+v", e)
+				// 	m.songInfo, _ = m.songInfo.Update("ERROR")
+				// }
 			case 2:
-				m.broker.FlushSource()
+				// m.broker.FlushSource()
 				sendOrTimeout(
 					m.broker.Sink(),
 					event.New(event.NEXT, nil),
 					func() <-chan time.Time { return time.After(time.Second * 2) },
 				)
 				// songName = event.NEXT.String()
-				e := <-m.broker.Source()
-				if newSongEvent, ok := e.(event.SongChange); ok {
-					d := newSongEvent.Data()
-					song := d["songName"]
-					m.songInfo, _ = m.songInfo.Update(song)
-				} else {
-					log.Printf("expected song change event, got %+v", e)
-					m.songInfo, _ = m.songInfo.Update("ERROR")
-				}
+				// e := <-m.broker.Source()
+				// if newSongEvent, ok := e.(event.SongChange); ok {
+				// 	d := newSongEvent.Data()
+				// 	song := d["songName"]
+				// 	m.songInfo, _ = m.songInfo.Update(song)
+				// } else {
+				// 	log.Printf("expected song change event, got %+v", e)
+				// 	m.songInfo, _ = m.songInfo.Update("ERROR")
+				// }
 			}
 
 		}
@@ -144,8 +177,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
+	log.Printf("model.View called with si=%+v\n", m)
 	// The header
-	s := "What should we buy at the market?\n\n"
+	s := fmt.Sprintf("%s\n\n", m.songInfo.View())
 
 	// Iterate over our choices
 	for i, choice := range m.choices {
@@ -169,14 +203,16 @@ func (m model) View() string {
 	// The footer
 	s += "\nPress q to quit.\n"
 
-	gap := "\n\n"
+	gap := "\n"
 	// Send the UI for rendering
-	return fmt.Sprintf(
+	r := fmt.Sprintf(
 		"%s%s%s",
 		s,
 		gap,
 		m.songInfo.View(),
 	)
+	log.Println("base model render result: ", r)
+	return r
 }
 
 func sendOrTimeout(ch chan<- event.Event, v event.Event, or func() <-chan time.Time) {
@@ -187,7 +223,8 @@ func sendOrTimeout(ch chan<- event.Event, v event.Event, or func() <-chan time.T
 }
 
 type songInfo struct {
-	text string
+	text   string
+	broker Broker
 }
 
 func (si songInfo) Init() tea.Cmd {
@@ -205,5 +242,16 @@ func (si songInfo) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (si songInfo) View() string {
+	log.Printf("songInfo.View called with si.text=%s\n", si.text)
 	return si.text
+}
+
+var subs map[string][]func(event.Event) = map[string][]func(event.Event){}
+var mu sync.Mutex
+
+func sub(e event.Event, cb func(event.Event)) {
+	mu.Lock()
+	defer mu.Unlock()
+	key := e.String()
+	subs[key] = append(subs[key], cb)
 }

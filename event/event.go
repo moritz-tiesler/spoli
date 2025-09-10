@@ -102,6 +102,5 @@ func New(e event, data map[any]any) Event {
 		return SongChange{SONGCHANGE, data}
 	default:
 		return Unknown{UKNOWN}
-
 	}
 }
