@@ -495,11 +495,19 @@ func (c Client) handlePlayerEvent(ctx context.Context, e event.Event, b Broker) 
 
 	case event.Prev:
 		err = c.Previous(ctx)
-		ps, err := c.PlayerState(ctx)
+		log.Println("called prev")
+		sig, err := c.stateChanged(ctx)
+		log.Println("called stateChanged")
 		if err != nil {
 			log.Printf("error reading playerstate: %s\n", err)
 			break
 		}
+		ps := <-sig
+		if ps == nil {
+			log.Println("nil state received")
+			break
+		}
+		log.Println("new state received")
 		newSong := ps.CurrentlyPlaying.Item.Name
 		log.Println("new song: ", newSong)
 		b.Source() <- event.New(
